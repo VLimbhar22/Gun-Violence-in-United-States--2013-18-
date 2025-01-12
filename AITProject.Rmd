@@ -1,0 +1,235 @@
+---
+title: "AITProject"
+author: "Vedant Limbhare"
+date: "2023-04-26"
+output: html_document
+---
+
+```{r include=FALSE}
+library("tidyverse")
+library("dplyr")
+library("maps")
+library("sf")
+library("formattable")
+library("leaflet")
+library("viridis")
+library("plotly")
+library("gridExtra")
+ library(RColorBrewer)
+```
+
+```{r}
+gun_violence_df <- read_csv("gun-violence-data_01-2013_03-2018.csv")
+head(gun_violence_df)
+```
+
+```{r}
+
+gun_violence_df <- subset(gun_violence_df, select = -c(address,incident_url, source_url,incident_url_fields_missing,congressional_district, location_description, notes, n_guns_involved,participant_name,sources, state_house_district, state_senate_district,participant_relationship))
+
+```
+
+Q. What are the geographic patterns of gun violence incidents in the United States? Are certain states, cities, or neighborhoods more likely to experience incidents?
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+my_sf_layer <- st_read("tl_rd22_us_state/tl_rd22_us_state.shp")
+
+# Check the current datum of the layer
+st_crs(my_sf_layer)
+
+# Transform the layer to WGS84
+my_sf_layer_wgs84 <- st_transform(my_sf_layer, 4326)
+
+# Check the new datum of the layer
+st_crs(my_sf_layer_wgs84)
+```
+
+```{r}
+unique_values <- table(gun_violence_df$state)
+
+death_injured_count <- data.frame(unique_values)
+
+total_killed <- aggregate(cbind(gun_violence_df$n_killed, gun_violence_df$n_injured) ~ gun_violence_df$state, data = gun_violence_df, FUN = sum)
+
+total_killed <- total_killed %>% 
+        rename("states" = "gun_violence_df$state",
+               "total_killed" = "V1",
+               "total_injured" = "V2")
+
+total_killed$total_cases <- total_killed$total_killed + total_killed$total_injured
+
+my_sf_layer_wgs84 <- inner_join(my_sf_layer_wgs84,total_killed, by = c("NAME" = "states"))
+
+```
+
+```{r}
+
+pal2 <- colorNumeric("plasma", domain = my_sf_layer_wgs84$total_cases, reverse = TRUE)
+labels <- sprintf(
+  "<strong>State: %s</strong><br/><strong>Total Injured: </strong>%s<br/><strong>Total Killed: </strong>%s</sup>",
+  my_sf_layer_wgs84$NAME, my_sf_layer_wgs84$total_injured, my_sf_layer_wgs84$total_killed) %>% lapply(htmltools::HTML)
+
+```
+
+```{r fig.width=9}
+
+leaflet(my_sf_layer_wgs84) %>%
+  addTiles() %>% 
+  addPolygons(fillColor = ~pal2(my_sf_layer_wgs84$total_cases),
+              fillOpacity = .5,
+              color = "black",
+              weight = 0.4,
+              label = labels,
+              dashArray = "5",
+              highlightOptions = highlightOptions(
+                weight = 8,
+                color = "skyblue",
+                dashArray = "",
+                fillOpacity = 0.7,
+                bringToFront = TRUE),
+              labelOptions = labelOptions(
+                style = list("font-weight" = "normal", padding = "3px 8px"),
+                textsize = "10px",
+                direction = "auto")) %>% 
+  addLegend('topright',
+            pal = pal2,
+            values =~my_sf_layer_wgs84$total_cases,
+            title = 'Gun Violence in US(2013-18)')%>%
+  addMiniMap(
+    tiles = providers$Esri.WorldStreetMap,
+    toggleDisplay = TRUE
+  )%>%
+  addEasyButton(easyButton(
+    icon="fa-globe", title="Zoom to Level 1",
+    onClick=JS("function(btn, map){ map.setZoom(2); }")))
+```
+
+From the above choropleth map, it can be seen that there are high chances of crime happening in states such as Illinois which has a highest record of Incidents followed by California, Texas and Florida. This information can be useful in inspecting gun control policies and gun licence distribution in these states to lower the crime rate and taking measures for public safety.
+
+
+```{r}
+
+total_fatalities_county <- aggregate(cbind(gun_violence_df$n_killed, gun_violence_df$n_injured) ~ gun_violence_df$city_or_county, data = gun_violence_df, FUN = sum)
+
+total_fatalities_county <- total_fatalities_county %>% 
+        rename("county" = "gun_violence_df$city_or_county",
+               "total_killed" = "V1",
+               "total_injured" = "V2")
+
+total_fatalities_county$total_count <- total_fatalities_county$total_killed + total_fatalities_county$total_injured
+```
+
+
+```{r}
+county_df <- map_data("county") #county data
+
+county_df <- subset(county_df, select = -c(group,order))
+
+```
+
+
+```{r}
+total_fatalities_county$county <- tolower(total_fatalities_county$county)
+
+total_fatalities_county <- inner_join(
+  total_fatalities_county,
+  county_df,
+  by = c("county" = "subregion"),
+  copy = FALSE,
+  na_matches = c("na", "never"),
+  multiple = "first",
+  unmatched = "drop",
+  relationship = NULL
+)
+
+```
+
+
+
+```{r}
+
+label2 <- sprintf(
+  "<strong>County: %s</strong><br/><strong>Total Fatalities: </strong>%s<br/><strong>Total Killed: </strong>%s<br/><strong>Total Injured: </strong>%s</sup>",
+  total_fatalities_county$county, total_fatalities_county$total_count, total_fatalities_county$total_killed, total_fatalities_county$total_injured) %>% lapply(htmltools::HTML)
+
+my_palette <- colorNumeric(c("orange", "red3", "maroon4"), domain=range(total_fatalities_county$total_count))
+
+```
+
+```{r fig.width=9}
+leaflet(total_fatalities_county) %>%
+  addProviderTiles(providers$Stamen.TonerLite) %>% 
+  addCircles(lng = ~long,
+             lat = ~lat,
+             popup = label2,
+             label = ~county,
+             opacity = 0.4, 
+             radius = total_fatalities_county$total_count*50,
+             color = ~my_palette(total_fatalities_county$total_count),
+             fillColor = ~my_palette(total_fatalities_county$total_count),
+             fillOpacity = 0.25
+  )%>% 
+  addLegend('bottomleft',
+            pal = my_palette,
+            values = range(total_fatalities_county$total_count),
+            title = 'County Fatalities Across US(2013-18)')
+
+```
+
+From the above leaflet, we can see a different scenario where even though states such as Illinois and California had the most incidents across the state, when we compare across counties, the highest count of incidents are occured in Baltimore followed by Philadelphia and Houston. With the help of both these graphs we can see the various aspects of Geographical patterns of Gun Violence Incidents across US.
+
+
+
+Q. What are the temporal patterns of gun violence incidents in the United States? Are there certain months, days of the week when incidents are more likely to occur?
+
+```{r fig.height=8, fig.width=9}
+gun_violence_df$date <- as.Date(gun_violence_df$date)
+
+gun_violence_df$year <- format(gun_violence_df$date, "%Y")
+gun_violence_df$month <- format(gun_violence_df$date, "%m")
+gun_violence_df$day <- format(gun_violence_df$date, "%A")
+
+y_yrs <- tapply(gun_violence_df$incident_id, gun_violence_df$year, FUN = length)
+x_yrs <- unique(gun_violence_df$year)
+
+y_months <- aggregate(gun_violence_df$incident_id, by = list(gun_violence_df$year, gun_violence_df$month), FUN = length)
+y_months <- tapply(y_months$x, y_months$Group.2, mean)
+x_months <- c('Jan', 'Feb', 'Mar', 'Apr', 'May', 'June', 'July', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+
+y_days <- aggregate(gun_violence_df$incident_id, by = list(gun_violence_df$year, gun_violence_df$day), FUN = length)
+y_days <- tapply(y_days$x, y_days$Group.2, mean)
+x_days <- c('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
+
+
+plot1 <- ggplot(data = gun_violence_df, aes(x = year)) +
+  geom_bar(stat = "count", fill="#06C4BE") +
+  geom_text(stat='count',aes(label=after_stat(count), vjust=1.5, hjust=0.5), size= 2.5, colour="white")+
+  theme_minimal()+
+  labs(title = "Number of Incidents per Year", x = "YEAR", y = "COUNT")
+
+plot2 <- ggplot(data = gun_violence_df, aes(x = month)) +
+  geom_bar(stat = "count", fill ="maroon4") +
+  geom_text(stat='count',aes(label=after_stat(count), vjust=1.5, hjust=0.5), size= 2.5, colour="white")+
+  theme_minimal()+
+  labs(title = "Number of Incidents per Month", x = "MONTH", y = "COUNT")+
+  scale_fill_viridis_c(option = "magma")
+
+plot3 <- ggplot(data = gun_violence_df, aes(x = day)) +
+  geom_bar(stat = "count", fill="orange") +
+  geom_text(stat='count',aes(label=after_stat(count), vjust=1.5, hjust=0.5), size= 2.5, colour="white")+
+  theme_minimal()+
+  labs(title = "Number of Incidents per Day", x = "DAY", y = "COUNT")
+
+grid.arrange(plot1, plot2, plot3, nrow = 3)
+
+```
+
+Incidents per Year: 1. The gun violence incidents per year show an upward trend from 51000 in 2014 to 61000 in 2017. 2. Although the data for 2018 is insufficient(only for first 3 months of 2018), there are already 13000 incidents have taken place.
+
+Average Number of Incidents per Month Over the Years: 1. From the graph, it can be seen that the count of incidents is higher around January and March further followed by July and August months.
+
+Average Number of Incidents per Day over Years: 1. From observation, we can see that most of the incidents have occured during the weekend making Saturday and Sunday most susceptible to happening of a crime.
+
+
